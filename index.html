@@ -194,6 +194,12 @@
   }
   .modal .preview-strip img{max-width:100%; max-height:100%; object-fit:contain;}
 
+  .spin{
+    border:3px solid var(--line); border-top-color:var(--accent); border-radius:50%;
+    width:36px; height:36px; animation:spin 1s linear infinite; margin:22px auto;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+  #tryonImg{max-width:100%; max-height:60vh; border-radius:12px; margin:0 auto 14px; display:block;}
   .toast{
     position:fixed; left:50%; bottom:calc(24px + env(safe-area-inset-bottom)); transform:translateX(-50%);
     background:var(--ink); color:#fff; padding:11px 20px; border-radius:999px;
@@ -316,7 +322,7 @@
     </div>
     <label class="check">
       <input type="checkbox" id="addRemoveBg" checked>
-      Remove white background (good for photos on a white/plain surface)
+      Remove background (smart cutout &mdash; works on any photo)
     </label>
     <div class="row" style="justify-content:flex-end; margin-top:14px;">
       <button class="btn ghost" id="addCancel">Cancel</button>
@@ -348,6 +354,21 @@
     <div class="row" style="justify-content:flex-end;">
       <button class="btn ghost" id="confirmNo">Cancel</button>
       <button class="btn danger" id="confirmYes">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SEE IT FOR REAL MODAL ============ -->
+<div class="modal-back" id="tryonModal">
+  <div class="modal" style="text-align:center;">
+    <h3 id="tryonTitle">Seeing it for real&hellip;</h3>
+    <div class="spin" id="tryonSpin"></div>
+    <p id="tryonMsg" style="color:var(--muted); font-size:14px; margin-bottom:14px; display:none;"></p>
+    <img id="tryonImg" style="display:none;" alt="AI render of this look">
+    <div class="row" style="justify-content:center;">
+      <a class="btn ghost small" id="tryonDownload" style="display:none; text-decoration:none;" download="maggie-look.png">Download</a>
+      <button class="btn small" id="tryonRedo" style="display:none;">Try again</button>
+      <button class="btn ghost small" id="tryonClose">Close</button>
     </div>
   </div>
 </div>
@@ -450,6 +471,32 @@ function loadImage(src){
 async function blobToImage(blob){
   const u = URL.createObjectURL(blob);
   try{ return await loadImage(u); } finally{ /* keep URL alive until drawn */ setTimeout(()=>URL.revokeObjectURL(u), 5000); }
+}
+async function downscaleBlob(blob, max, type, quality){
+  const img = await blobToImage(blob);
+  const scale = Math.min(1, max/Math.max(img.naturalWidth,img.naturalHeight));
+  const w = Math.round(img.naturalWidth*scale), h = Math.round(img.naturalHeight*scale);
+  const c = document.createElement('canvas'); c.width=w; c.height=h;
+  c.getContext('2d').drawImage(img,0,0,w,h);
+  return await new Promise(r=>c.toBlob(r,type,quality));
+}
+/* Smart background removal — on-device AI model, lazy-loaded from CDN on
+   first use (~40 MB, cached by the browser after that). Falls back to the
+   white flood-fill below when offline or the load fails. */
+let bgLibPromise = null;
+function loadBgLib(){
+  if(!bgLibPromise){
+    bgLibPromise = import('https://cdn.jsdelivr.net/npm/@imgly/background-removal@1/+esm')
+      .catch(err=>{ bgLibPromise=null; throw err; });
+  }
+  return bgLibPromise;
+}
+let bgFirstUse = true;
+async function smartCut(file){
+  const lib = await loadBgLib();
+  if(bgFirstUse){ toast('First time: downloading the smart scissors (~40 MB)…'); bgFirstUse=false; }
+  const cut = await lib.removeBackground(file, {output:{format:'image/png'}});
+  return await downscaleBlob(cut, 900, 'image/png');
 }
 // Downscale + optionally knock out a near-white background (edge flood fill,
 // so white shirts on a white bed survive as long as they have visible edges).
@@ -582,6 +629,7 @@ document.getElementById('fileItems').addEventListener('change', e=>{
   const sel = document.getElementById('addCategory');
   sel.innerHTML = CATEGORIES.map(c=>`<option value="${c}">${CAT_LABEL[c]}</option>`).join('');
   addModal.classList.add('show');
+  loadBgLib().catch(()=>{}); // warm the model while she picks a category
 });
 document.getElementById('addCancel').onclick = ()=>{ pendingFiles=[]; addModal.classList.remove('show'); };
 document.getElementById('addConfirm').onclick = async ()=>{
@@ -589,10 +637,20 @@ document.getElementById('addConfirm').onclick = async ()=>{
   const removeBg = document.getElementById('addRemoveBg').checked;
   addModal.classList.remove('show');
   toast(pendingFiles.length>1?`Adding ${pendingFiles.length} pieces…`:'Adding…');
-  let n = 0;
+  let n = 0, fellBack = false;
   for(const f of pendingFiles){
     try{
-      const blob = await processUpload(f, removeBg);
+      let blob;
+      if(removeBg){
+        try{ blob = await smartCut(f); }
+        catch(err){
+          console.error('smart cut failed, using simple cutout', err);
+          blob = await processUpload(f, true);
+          if(!fellBack){ toast('Smart scissors unavailable — used the simple cutout'); fellBack=true; }
+        }
+      }else{
+        blob = await processUpload(f, false);
+      }
       const it = {
         id: uid(),
         name: f.name.replace(/\.[^.]+$/,'').replace(/[-_]+/g,' ').trim() || CAT_LABEL[cat],
@@ -857,13 +915,15 @@ function renderOutfits(){
         <div class="date"></div>
         <div class="row">
           <button class="btn small" style="flex:1;">Wear it</button>
+          <button class="btn ghost small" title="See it for real">&#10024;</button>
           <button class="btn danger small">Delete</button>
         </div>
       </div>`;
     card.querySelector('img').src = urlFor('outfit-'+o.id, o.snapshot);
     card.querySelector('.name').textContent = o.name;
     card.querySelector('.date').textContent = new Date(o.createdAt).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
-    const [wearBtn, delBtn] = card.querySelectorAll('.meta .btn');
+    const [wearBtn, realBtn, delBtn] = card.querySelectorAll('.meta .btn');
+    realBtn.onclick = ()=>seeItReal(o);
     wearBtn.onclick = ()=>{
       document.getElementById('clearStageBtn').click();
       let missing = 0;
@@ -921,6 +981,66 @@ document.getElementById('sampleBtn').onclick = async ()=>{
   toast('Sample closet ready — tap "Try on" to play');
 };
 
+/* ---------------- See it for real (AI try-on via proxy) ---------------- */
+const TRYON_ENDPOINT = 'https://maggie-closet-api.netlify.app/.netlify/functions/tryon';
+const tryonModal = document.getElementById('tryonModal');
+let tryonOutfit = null;
+function tryonShow(state, payload){ // 'loading' | 'image' | 'error'
+  const el = id=>document.getElementById(id);
+  el('tryonSpin').style.display = state==='loading'? 'block':'none';
+  el('tryonImg').style.display = state==='image'? 'block':'none';
+  el('tryonMsg').style.display = state==='error'? 'block':'none';
+  el('tryonDownload').style.display = state==='image'? 'inline-block':'none';
+  el('tryonRedo').style.display = state==='loading'? 'none':'inline-block';
+  el('tryonTitle').textContent =
+    state==='loading'? 'Seeing it for real…' : state==='image'? 'Here she is ✨' : 'Hmm, that didn\'t work';
+  if(state==='image'){
+    const u = URL.createObjectURL(payload);
+    el('tryonImg').src = u;
+    el('tryonDownload').href = u;
+  }
+  if(state==='error') el('tryonMsg').textContent = payload;
+  tryonModal.classList.add('show');
+}
+document.getElementById('tryonClose').onclick = ()=>tryonModal.classList.remove('show');
+document.getElementById('tryonRedo').onclick = ()=>{ if(tryonOutfit) seeItReal(tryonOutfit, true); };
+
+async function blobToB64Part(blob){
+  const u = await blobToDataURL(blob);
+  return {mime: u.slice(5, u.indexOf(';')), data: u.slice(u.indexOf(',')+1)};
+}
+async function seeItReal(o, force){
+  if(!modelBlob){ toast('Add your photo in the Mirror tab first'); return; }
+  tryonOutfit = o;
+  if(o.render && !force){ tryonShow('image', o.render); return; }
+  tryonShow('loading');
+  try{
+    const garments = [];
+    const seen = new Set();
+    for(const l of o.layers){
+      if(seen.has(l.itemId)) continue; seen.add(l.itemId);
+      const it = items.find(i=>i.id===l.itemId);
+      if(it) garments.push({name:`${it.name} (${CAT_LABEL[it.category]||it.category})`, ...(await blobToB64Part(it.blob))});
+    }
+    if(!garments.length) throw new Error('None of this look\'s pieces are in the closet anymore.');
+    const person = await blobToB64Part(modelBlob);
+    const res = await fetch(TRYON_ENDPOINT, {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({person, garments: garments.slice(0,6)})
+    });
+    const j = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(j.error || `The styling service hit a snag (${res.status}). Try again in a minute.`);
+    const render = await dataURLToBlob(j.image);
+    o.render = render;
+    await put('outfits', o);
+    tryonShow('image', render);
+  }catch(err){
+    tryonShow('error', err.message==='Failed to fetch'
+      ? 'Couldn\'t reach the styling service — check your internet and try again.'
+      : err.message);
+  }
+}
+
 /* ---------------- Backup & restore ---------------- */
 function blobToDataURL(blob){
   return new Promise((res,rej)=>{
@@ -942,7 +1062,8 @@ document.getElementById('backupBtn').onclick = async ()=>{
     }))),
     outfits: await Promise.all(outfits.map(async o=>({
       id:o.id, name:o.name, createdAt:o.createdAt, layers:o.layers,
-      snapshot: await blobToDataURL(o.snapshot)
+      snapshot: await blobToDataURL(o.snapshot),
+      render: o.render? await blobToDataURL(o.render) : null
     }))),
     modelPhoto: modelBlob? await blobToDataURL(modelBlob) : null
   };
@@ -976,6 +1097,7 @@ fileRestore.addEventListener('change', async e=>{
   }
   for(const o of (data.outfits||[])){
     const of = {id:o.id, name:o.name, createdAt:o.createdAt, layers:o.layers, snapshot: await dataURLToBlob(o.snapshot)};
+    if(o.render) of.render = await dataURLToBlob(o.render);
     await put('outfits', of);
     const idx = outfits.findIndex(x=>x.id===of.id);
     if(idx>=0) outfits[idx]=of; else outfits.push(of);
