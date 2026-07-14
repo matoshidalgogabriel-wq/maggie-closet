@@ -711,6 +711,7 @@ window.addEventListener('resize', sizeStage);
 
 async function setModelPhoto(blob){
   modelBlob = blob;
+  document.getElementById('changePhotoBtn').textContent = blob? 'Change my photo' : '+ Add my photo';
   if(blob){
     const img = await blobToImage(blob);
     bgAspect = img.naturalHeight/img.naturalWidth;
