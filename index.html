@@ -1194,7 +1194,10 @@ async function seeItReal(o, force){
       if(!it.clean) document.getElementById('tryonTitle').textContent = `Prepping ${it.name}…`;
       try{ src = await ensureCleanGarment(it); }
       catch(err){ console.error('cleanup failed, using original photo', err); }
-      garments.push({name:`${it.name} (${CAT_LABEL[it.category]||it.category})`, ...(await blobToB64Part(src))});
+      // Netlify caps request bodies at ~6MB; full-res clean PNGs would blow past it
+      // on multi-piece looks, so ship compact JPEGs — plenty for the render model.
+      const wire = await downscaleBlob(src, 768, 'image/jpeg', .85);
+      garments.push({name:`${it.name} (${CAT_LABEL[it.category]||it.category})`, ...(await blobToB64Part(wire))});
     }
     document.getElementById('tryonTitle').textContent = 'Seeing it for real…';
     if(!garments.length) throw new Error('None of this look\'s pieces are in the closet anymore.');
