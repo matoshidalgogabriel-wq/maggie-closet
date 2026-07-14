@@ -418,7 +418,7 @@
 </main>
 
 <footer>
-  Maggie&rsquo;s Closet &middot; your closet stays on this device &middot; ✨ sends just that look&rsquo;s photos to the AI stylist<br>
+  Maggie&rsquo;s Closet &middot; your closet stays on this device &middot; ✨ features send only the relevant photos to the AI stylist<br>
   <button class="linklike" id="backupBtn">Back up my closet</button> &middot;
   <button class="linklike" id="restoreBtn">Restore a backup</button>
 </footer>
@@ -1141,8 +1141,10 @@ function tryonShow(state, payload){ // 'loading' | 'image' | 'error'
   el('tryonTitle').textContent =
     state==='loading'? 'Seeing it for real…' : state==='image'? 'Here she is ✨' : 'Hmm, that didn\'t work';
   if(state==='image'){
+    const img = el('tryonImg');
+    if(img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
     const u = URL.createObjectURL(payload);
-    el('tryonImg').src = u;
+    img.src = u;
     el('tryonDownload').href = u;
   }
   if(state==='error') el('tryonMsg').textContent = payload;
@@ -1171,17 +1173,21 @@ async function ensureCleanGarment(it){
   await put('items', it);
   return it.clean;
 }
+// One-time, honest heads-up before ANY photo leaves the device — covers both
+// "See it for real" (that look's pieces + her photo) and "Dress me" (closet thumbnails).
+async function needsAiConsent(){
+  if(await kvGet('aiNoticeAccepted')) return true;
+  const ok = await confirmAsk('Just so you know ✨',
+    'Trying on a look or asking the stylist for ideas sends the relevant photos (your photo, that look’s pieces, or your closet thumbnails) to an AI service to do its thing. Nothing else in your closet is ever sent anywhere.',
+    'Continue ✨');
+  if(ok) await kvSet('aiNoticeAccepted', true);
+  return ok;
+}
 async function seeItReal(o, force){
   if(!modelBlob){ toast('Add your photo in the Mirror tab first'); return; }
   tryonOutfit = o;
   if(o.render && !force){ tryonShow('image', o.render); return; }
-  if(!(await kvGet('aiNoticeAccepted'))){
-    const ok = await confirmAsk('See it for real ✨',
-      'This sends your photo and this look’s pieces to the AI styling service to draw the picture. The rest of your closet never leaves your device.',
-      'Continue ✨');
-    if(!ok) return;
-    await kvSet('aiNoticeAccepted', true);
-  }
+  if(!(await needsAiConsent())) return;
   tryonShow('loading');
   try{
     const garments = [];
@@ -1248,6 +1254,7 @@ document.getElementById('dressMeBtn').onclick = ()=>{
 };
 document.getElementById('styCancel').onclick = ()=>styModal.classList.remove('show');
 document.getElementById('styGo').onclick = async ()=>{
+  if(!(await needsAiConsent())) return;
   const occasion = document.getElementById('styCustom').value.trim() || styPick;
   styShow('busy');
   try{
