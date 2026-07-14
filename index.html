@@ -195,6 +195,10 @@
   .check{display:flex; align-items:center; gap:10px; font-size:14px; padding:6px 0;}
   .check input{width:20px; height:20px; accent-color:var(--accent);}
   .modal .preview-strip{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;}
+  .modal-tip{
+    font-size:12.5px; color:var(--muted); background:var(--accent-soft);
+    border-radius:10px; padding:8px 12px; margin-bottom:12px; line-height:1.4;
+  }
   .modal .preview-strip .pv{
     width:64px; height:64px; border-radius:10px; border:1px solid var(--line);
     display:flex; align-items:center; justify-content:center; background:#fdfbfa; overflow:hidden;
@@ -281,6 +285,7 @@
           <img id="stageBg" alt="">
         </div>
       </div>
+      <p class="modal-tip" style="text-align:center; margin:0;">Best mirror photo: standing straight, head to toe, face visible &mdash; not a mirror selfie.</p>
 
       <div class="layer-controls" id="layerControls">
         <button class="lc-btn" data-act="smaller" title="Smaller">&minus;</button>
@@ -313,7 +318,7 @@
 </main>
 
 <footer>
-  Maggie&rsquo;s Closet &middot; everything stays on this device<br>
+  Maggie&rsquo;s Closet &middot; your closet stays on this device &middot; ✨ sends just that look&rsquo;s photos to the AI stylist<br>
   <button class="linklike" id="backupBtn">Back up my closet</button> &middot;
   <button class="linklike" id="restoreBtn">Restore a backup</button>
 </footer>
@@ -322,6 +327,7 @@
 <div class="modal-back" id="addModal">
   <div class="modal">
     <h3>Add pieces</h3>
+    <p class="modal-tip">Best photos: lay the piece flat or hang it up, then step back — keep hands out of the shot.</p>
     <div class="preview-strip" id="addPreview"></div>
     <div class="field">
       <label>Category</label>
@@ -453,7 +459,7 @@ function toast(msg){
   t.textContent = msg; t.classList.add('show');
   clearTimeout(toastT); toastT = setTimeout(()=>t.classList.remove('show'), 2400);
 }
-function confirmAsk(title, text){
+function confirmAsk(title, text, okLabel){
   return new Promise(res=>{
     const m = document.getElementById('confirmModal');
     document.getElementById('confirmTitle').textContent = title;
@@ -461,6 +467,8 @@ function confirmAsk(title, text){
     m.classList.add('show');
     const yes = document.getElementById('confirmYes');
     const no = document.getElementById('confirmNo');
+    yes.textContent = okLabel || 'Delete';
+    yes.className = okLabel ? 'btn' : 'btn danger';
     const done = v=>{ m.classList.remove('show'); yes.onclick=no.onclick=null; res(v); };
     yes.onclick = ()=>done(true);
     no.onclick = ()=>done(false);
@@ -706,7 +714,8 @@ async function setModelPhoto(blob){
   if(blob){
     const img = await blobToImage(blob);
     bgAspect = img.naturalHeight/img.naturalWidth;
-    stageBg.src = urlFor('__model__'+Date.now(), blob);
+    if(stageBg.src.startsWith('blob:')) URL.revokeObjectURL(stageBg.src);
+    stageBg.src = URL.createObjectURL(blob);
   }else{
     bgAspect = 4/3;
     stageBg.src = FALLBACK_MODEL;
@@ -922,7 +931,7 @@ function renderOutfits(){
         <div class="date"></div>
         <div class="row">
           <button class="btn small" style="flex:1;">Wear it</button>
-          <button class="btn ghost small" title="See it for real">&#10024;</button>
+          <button class="btn ghost small" title="See it for real" aria-label="See it for real — AI render of this look">&#10024;</button>
           <button class="btn danger small">Delete</button>
         </div>
       </div>`;
@@ -955,9 +964,6 @@ function renderOutfits(){
 document.getElementById('goMirrorBtn').onclick = ()=>goTab('mirror');
 
 /* ---------------- Sample closet ---------------- */
-function svgBlob(svg){
-  return new Blob([svg], {type:'image/svg+xml'});
-}
 async function svgToPngBlob(svg, size){
   const img = await loadImage('data:image/svg+xml,'+encodeURIComponent(svg));
   const c = document.createElement('canvas'); c.width=size; c.height=size;
@@ -1020,6 +1026,13 @@ async function seeItReal(o, force){
   if(!modelBlob){ toast('Add your photo in the Mirror tab first'); return; }
   tryonOutfit = o;
   if(o.render && !force){ tryonShow('image', o.render); return; }
+  if(!(await kvGet('aiNoticeAccepted'))){
+    const ok = await confirmAsk('See it for real ✨',
+      'This sends your photo and this look’s pieces to the AI styling service to draw the picture. The rest of your closet never leaves your device.',
+      'Continue ✨');
+    if(!ok) return;
+    await kvSet('aiNoticeAccepted', true);
+  }
   tryonShow('loading');
   try{
     const garments = [];
