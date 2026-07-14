@@ -1023,6 +1023,22 @@ async function blobToB64Part(blob){
   const u = await blobToDataURL(blob);
   return {mime: u.slice(5, u.indexOf(';')), data: u.slice(u.indexOf(',')+1)};
 }
+// One-time AI cleanup per piece: extracts the garment onto a clean white
+// background (no hands/hangers/closet) so try-on renders never get confused
+// by whoever was holding the item. Cached on the item forever.
+async function ensureCleanGarment(it){
+  if(it.clean) return it.clean;
+  const g = await blobToB64Part(it.blob);
+  const res = await fetch(TRYON_ENDPOINT, {
+    method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify({mode:'cleanup', garment:{name:it.name, mime:g.mime, data:g.data}})
+  });
+  const j = await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(j.error || `Couldn't prep "${it.name}"`);
+  it.clean = await dataURLToBlob(j.image);
+  await put('items', it);
+  return it.clean;
+}
 async function seeItReal(o, force){
   if(!modelBlob){ toast('Add your photo in the Mirror tab first'); return; }
   tryonOutfit = o;
@@ -1041,8 +1057,14 @@ async function seeItReal(o, force){
     for(const l of o.layers){
       if(seen.has(l.itemId)) continue; seen.add(l.itemId);
       const it = items.find(i=>i.id===l.itemId);
-      if(it) garments.push({name:`${it.name} (${CAT_LABEL[it.category]||it.category})`, ...(await blobToB64Part(it.blob))});
+      if(!it) continue;
+      let src = it.blob;
+      if(!it.clean) document.getElementById('tryonTitle').textContent = `Prepping ${it.name}…`;
+      try{ src = await ensureCleanGarment(it); }
+      catch(err){ console.error('cleanup failed, using original photo', err); }
+      garments.push({name:`${it.name} (${CAT_LABEL[it.category]||it.category})`, ...(await blobToB64Part(src))});
     }
+    document.getElementById('tryonTitle').textContent = 'Seeing it for real…';
     if(!garments.length) throw new Error('None of this look\'s pieces are in the closet anymore.');
     const person = await blobToB64Part(modelBlob);
     const res = await fetch(TRYON_ENDPOINT, {
@@ -1079,7 +1101,8 @@ document.getElementById('backupBtn').onclick = async ()=>{
     app:'maggies-closet', version:1, exportedAt:new Date().toISOString(),
     items: await Promise.all(items.map(async i=>({
       id:i.id, name:i.name, category:i.category, createdAt:i.createdAt,
-      img: await blobToDataURL(i.blob)
+      img: await blobToDataURL(i.blob),
+      clean: i.clean? await blobToDataURL(i.clean) : null
     }))),
     outfits: await Promise.all(outfits.map(async o=>({
       id:o.id, name:o.name, createdAt:o.createdAt, layers:o.layers,
@@ -1110,6 +1133,7 @@ fileRestore.addEventListener('change', async e=>{
   let n = 0;
   for(const i of data.items){
     const it = {id:i.id, name:i.name, category:i.category, createdAt:i.createdAt, blob: await dataURLToBlob(i.img)};
+    if(i.clean) it.clean = await dataURLToBlob(i.clean);
     await put('items', it);
     const idx = items.findIndex(x=>x.id===it.id);
     if(idx>=0) items[idx]=it; else items.push(it);
