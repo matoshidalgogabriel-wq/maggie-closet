@@ -195,6 +195,17 @@
   .check{display:flex; align-items:center; gap:10px; font-size:14px; padding:6px 0;}
   .check input{width:20px; height:20px; accent-color:var(--accent);}
   .modal .preview-strip{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;}
+  .sug{
+    border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:12px;
+    background:#fffdfc;
+  }
+  .sug h4{font-family:Georgia,serif; font-weight:400; font-size:17px; margin-bottom:2px;}
+  .sug .why{font-size:13px; color:var(--muted); margin-bottom:8px; line-height:1.45;}
+  .sug .thumbs{display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap;}
+  .sug .thumbs img{
+    width:52px; height:52px; object-fit:contain; background:#fdfbfa;
+    border:1px solid var(--line); border-radius:8px; padding:3px;
+  }
   .modal-tip{
     font-size:12.5px; color:var(--muted); background:var(--accent-soft);
     border-radius:10px; padding:8px 12px; margin-bottom:12px; line-height:1.4;
@@ -275,6 +286,7 @@
     <div class="mirror-wrap">
       <div class="row">
         <button class="btn ghost small" id="changePhotoBtn">Change my photo</button>
+        <button class="btn small" id="dressMeBtn">✨ Dress me</button>
         <span class="spacer"></span>
         <button class="btn ghost small" id="clearStageBtn">Clear</button>
         <button class="btn small" id="saveLookBtn">Save this look</button>
@@ -356,6 +368,29 @@
       <button class="btn ghost" id="saveCancel">Cancel</button>
       <button class="btn" id="saveConfirm">Save look</button>
     </div>
+  </div>
+</div>
+
+<!-- ============ STYLIST MODAL ============ -->
+<div class="modal-back" id="styModal">
+  <div class="modal">
+    <h3>Dress me ✨</h3>
+    <div id="styAsk">
+      <div class="field"><label>What&rsquo;s the occasion?</label></div>
+      <div class="chips" id="styChips" style="flex-wrap:wrap; overflow:visible;"></div>
+      <div class="field" style="margin-top:10px;">
+        <input type="text" id="styCustom" placeholder="or type it — e.g. dinner with his parents" maxlength="120">
+      </div>
+      <div class="row" style="justify-content:flex-end;">
+        <button class="btn ghost" id="styCancel">Cancel</button>
+        <button class="btn" id="styGo">Style me</button>
+      </div>
+    </div>
+    <div id="styBusy" style="display:none; text-align:center; padding:18px 0;">
+      <div class="spin"></div>
+      <p style="color:var(--muted); font-size:14px; margin-top:10px;">Your stylist is going through the closet&hellip;</p>
+    </div>
+    <div id="styResults" style="display:none;"></div>
   </div>
 </div>
 
@@ -492,7 +527,9 @@ async function downscaleBlob(blob, max, type, quality){
   const scale = Math.min(1, max/Math.max(img.naturalWidth,img.naturalHeight));
   const w = Math.round(img.naturalWidth*scale), h = Math.round(img.naturalHeight*scale);
   const c = document.createElement('canvas'); c.width=w; c.height=h;
-  c.getContext('2d').drawImage(img,0,0,w,h);
+  const ctx = c.getContext('2d');
+  if(type==='image/jpeg'){ ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h); } // JPEG has no alpha — avoid black behind cutouts
+  ctx.drawImage(img,0,0,w,h);
   return await new Promise(r=>c.toBlob(r,type,quality));
 }
 /* Smart background removal — on-device AI model, lazy-loaded from CDN on
@@ -899,10 +936,7 @@ document.getElementById('saveLookBtn').onclick = ()=>{
   document.getElementById('lookName').focus();
 };
 document.getElementById('saveCancel').onclick = ()=>saveModal.classList.remove('show');
-document.getElementById('saveConfirm').onclick = async ()=>{
-  const name = document.getElementById('lookName').value.trim() || 'Untitled look';
-  saveModal.classList.remove('show');
-  toast('Saving…');
+async function saveCurrentLook(name){
   const snapshot = await snapshotStage();
   const o = {
     id: uid(), name, createdAt: Date.now(), snapshot,
@@ -911,6 +945,13 @@ document.getElementById('saveConfirm').onclick = async ()=>{
   await put('outfits', o);
   outfits.push(o);
   renderOutfits();
+  return o;
+}
+document.getElementById('saveConfirm').onclick = async ()=>{
+  const name = document.getElementById('lookName').value.trim() || 'Untitled look';
+  saveModal.classList.remove('show');
+  toast('Saving…');
+  await saveCurrentLook(name);
   toast(`Saved "${name}" 💕`);
 };
 document.getElementById('lookName').addEventListener('keydown', e=>{
@@ -1082,6 +1123,118 @@ async function seeItReal(o, force){
       ? 'Couldn\'t reach the styling service — check your internet and try again.'
       : err.message);
   }
+}
+
+/* ---------------- AI stylist (Dress me) ---------------- */
+const styModal = document.getElementById('styModal');
+const STY_OCCASIONS = ['Casual day','Work','Brunch','Date night','Girls’ night','Cozy at home'];
+let styPick = STY_OCCASIONS[0];
+function styShow(section){ // 'ask' | 'busy' | 'results'
+  document.getElementById('styAsk').style.display = section==='ask'? 'block':'none';
+  document.getElementById('styBusy').style.display = section==='busy'? 'block':'none';
+  document.getElementById('styResults').style.display = section==='results'? 'block':'none';
+}
+document.getElementById('dressMeBtn').onclick = ()=>{
+  if(items.length < 3){ toast('Add at least 3 pieces to the closet first'); return; }
+  const wrap = document.getElementById('styChips');
+  wrap.innerHTML = '';
+  STY_OCCASIONS.forEach(o=>{
+    const b = document.createElement('button');
+    b.className = 'chip'+(o===styPick?' active':'');
+    b.textContent = o;
+    b.onclick = ()=>{
+      styPick = o;
+      [...wrap.children].forEach(c=>c.classList.toggle('active', c===b));
+      document.getElementById('styCustom').value = '';
+    };
+    wrap.appendChild(b);
+  });
+  styShow('ask');
+  styModal.classList.add('show');
+};
+document.getElementById('styCancel').onclick = ()=>styModal.classList.remove('show');
+document.getElementById('styGo').onclick = async ()=>{
+  const occasion = document.getElementById('styCustom').value.trim() || styPick;
+  styShow('busy');
+  try{
+    const closet = await Promise.all(items.slice(0,30).map(async it=>{
+      const small = await downscaleBlob(it.clean||it.blob, 128, 'image/jpeg', .7);
+      const p = await blobToB64Part(small);
+      return {id: it.id, name: it.name, category: it.category, mime: p.mime, data: p.data};
+    }));
+    const res = await fetch(TRYON_ENDPOINT, {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({mode:'stylist', occasion, items: closet})
+    });
+    const j = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(j.error || 'The stylist hit a snag — try again');
+    renderSuggestions(j.outfits, occasion);
+  }catch(err){
+    toast(err.message==='Failed to fetch'? 'Couldn’t reach the stylist — check your internet.' : err.message);
+    styShow('ask');
+  }
+};
+function applySuggestionToMirror(sug){
+  document.getElementById('clearStageBtn').click();
+  let n = 0;
+  sug.itemIds.forEach(id=>{
+    const it = items.find(i=>i.id===id);
+    if(it){ addLayer(it); n++; }
+  });
+  selectLayer(null);
+  return n;
+}
+function renderSuggestions(outfits, occasion){
+  const wrap = document.getElementById('styResults');
+  wrap.innerHTML = `<p class="modal-tip">For <b>${occasion.replace(/</g,'&lt;')}</b> — from your own closet:</p>`;
+  const valid = outfits.filter(s=>Array.isArray(s.itemIds) && s.itemIds.some(id=>items.find(i=>i.id===id)));
+  if(!valid.length){
+    wrap.innerHTML += '<p style="color:var(--muted); font-size:14px;">The stylist couldn’t put together a look from these pieces — try adding a few more.</p>';
+  }
+  valid.forEach(sug=>{
+    const card = document.createElement('div');
+    card.className = 'sug';
+    const thumbs = sug.itemIds.map(id=>{
+      const it = items.find(i=>i.id===id);
+      return it? `<img src="${urlFor(it.id, it.blob)}" alt="" title="${(it.name||'').replace(/"/g,'&quot;')}">` : '';
+    }).join('');
+    card.innerHTML = `
+      <h4></h4>
+      <p class="why"></p>
+      <div class="thumbs">${thumbs}</div>
+      <div class="row">
+        <button class="btn ghost small" style="flex:1;">Try it on</button>
+        <button class="btn small" style="flex:1;">See it for real ✨</button>
+      </div>`;
+    card.querySelector('h4').textContent = sug.name || 'The look';
+    card.querySelector('.why').textContent = sug.why || '';
+    const [tryBtn, realBtn] = card.querySelectorAll('button');
+    tryBtn.onclick = ()=>{
+      const n = applySuggestionToMirror(sug);
+      styModal.classList.remove('show');
+      goTab('mirror');
+      toast(n? `Trying on "${sug.name||'the look'}"` : 'Those pieces aren’t in the closet anymore');
+    };
+    realBtn.onclick = async ()=>{
+      const n = applySuggestionToMirror(sug);
+      if(!n){ toast('Those pieces aren’t in the closet anymore'); return; }
+      styModal.classList.remove('show');
+      goTab('mirror');
+      await new Promise(r=>setTimeout(r, 400)); // let layers settle for the snapshot
+      const o = await saveCurrentLook(sug.name || 'Stylist pick');
+      seeItReal(o);
+    };
+    wrap.appendChild(card);
+  });
+  const again = document.createElement('div');
+  again.className = 'row';
+  again.style.justifyContent = 'flex-end';
+  again.innerHTML = '<button class="btn ghost small">Different occasion</button><button class="btn ghost small">Close</button>';
+  const [backBtn, closeBtn] = again.querySelectorAll('button');
+  backBtn.onclick = ()=>styShow('ask');
+  closeBtn.onclick = ()=>styModal.classList.remove('show');
+  wrap.appendChild(again);
+  styShow('results');
 }
 
 /* ---------------- Backup & restore ---------------- */
